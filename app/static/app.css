@@ -100,8 +100,9 @@ main#chat {
   line-height: 1.4;
 }
 .msg-user      { background: #e8f0ff; }
-.msg-assistant { background: #eef9ee; }
+.msg-assistant { background: #eef9ee; white-space: pre-wrap; }
 .msg-system    { background: #fdecea; color: #b3261e; }
+.msg-plan      { background: #fff7e6; color: #92580c; font-size: 13px; }
 .msg-tool      { background: #f3eefe; color: #5a2cab; font-family: ui-monospace, monospace; }
 
 #composer {

@@ -161,3 +161,40 @@ async def test_plan_stream_endpoint_returns_sse_event_stream(
     deltas = [e["delta"] for e in events if e["type"] == "token"]
     assert "".join(deltas) == "Plan: go to Kyoto"
     assert any(e["type"] == "done" for e in events)
+
+
+def test_plan_stream_emits_plan_event_instead_of_raw_json(
+    db: Session, stream_llm
+) -> None:
+    """When the first turn is a JSON plan, stream a 'plan' event with the parsed
+    sub-tasks — NOT raw JSON token deltas. Otherwise the user sees ugly
+    {"plan": [...]} text in the chat."""
+    sess = ChatSession(user_id="eve")
+    db.add(sess)
+    db.commit()
+    db.refresh(sess)
+
+    plan_json = '{"plan": ["Find attractions", "Estimate cost", "Build itinerary"]}'
+    stream_llm.script = [
+        {"chunks": [plan_json], "tool_calls": []},
+        {"chunks": ["Final answer."], "tool_calls": []},
+    ]
+
+    events = list(PlannerAgent(db).plan_stream(sess.id, goal="hi"))
+    types = [e["type"] for e in events]
+
+    # No token event should leak the raw JSON to the user
+    token_text = "".join(e["delta"] for e in events if e["type"] == "token")
+    assert '{"plan"' not in token_text, f"raw JSON leaked into tokens: {token_text!r}"
+
+    # A 'plan' event with the parsed list should be emitted instead
+    plan_events = [e for e in events if e["type"] == "plan"]
+    assert len(plan_events) == 1
+    assert plan_events[0]["subtasks"] == [
+        "Find attractions",
+        "Estimate cost",
+        "Build itinerary",
+    ]
+    # Final answer still streams as token deltas
+    assert "Final answer." in token_text
+    assert "done" in types

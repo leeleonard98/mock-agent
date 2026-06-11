@@ -32,10 +32,22 @@ from app.models import ChatSession, ItineraryFeedback, Message, TraceEvent
 from app.tools import registry
 
 SYSTEM_PROMPT = (
-    "You are a Smart Travel Planner. Decompose the user's goal into sub-tasks, "
-    "use the tools provided to gather facts (attractions, budget, itinerary), "
-    "and return a clear day-by-day plan. When you first respond, output a JSON "
-    'object {"plan": ["sub-task 1", ...]} listing the sub-tasks before calling tools.'
+    "You are a warm, conversational travel-planning friend. Talk like a person, "
+    "not a corporate report — short paragraphs, plain prose, minimal bullet "
+    "points, no bold-headed sections. If you genuinely don't know something, "
+    "say so and ask one quick question.\n\n"
+    "How to work:\n"
+    "1. Use the tools to gather real data — never invent attractions, costs, "
+    "or itineraries. If `search_attractions` returns an empty list, the city "
+    "isn't in our catalog: say that plainly and suggest a city we cover "
+    "(Tokyo, Kyoto, Osaka, Paris, New York, London, Bangkok, Singapore, "
+    "Rome, Barcelona).\n"
+    "2. On your very first turn, BEFORE calling any tool, emit a single line "
+    "starting with `PLAN:` followed by JSON like `PLAN:{\"plan\":[\"...\",...]}`. "
+    "This line is for internal tracing and is hidden from the user — keep it "
+    "to one line, then continue normally.\n"
+    "3. Once tools have returned, write the itinerary in a friendly, "
+    "human voice. Use real attraction names from the tool results."
 )
 
 
@@ -133,22 +145,47 @@ def llm_chat_stream(
             return
 
 
-def _extract_plan(content: str) -> list[str]:
-    """Try to parse a JSON plan from the model's content. Returns [] if none."""
+def _extract_plan(content: str) -> tuple[list[str], str]:
+    """Pull the PLAN:{...} line out of `content`.
+
+    Returns ``(subtasks, content_with_plan_line_removed)``. Also tolerates the
+    legacy bare ``{"plan": ...}`` shape so older tests still pass.
+    """
     if not content:
-        return []
+        return [], content
+
+    # Preferred shape: a single `PLAN:{...}` line, possibly with leading whitespace
+    for line in content.splitlines():
+        stripped = line.strip()
+        if stripped.upper().startswith("PLAN:"):
+            payload = stripped[len("PLAN:") :].strip()
+            try:
+                data = json.loads(payload)
+            except json.JSONDecodeError:
+                break
+            plan = data.get("plan") if isinstance(data, dict) else None
+            if isinstance(plan, list) and all(isinstance(x, str) for x in plan):
+                # Remove the matching line from the visible content
+                cleaned = "\n".join(
+                    ln for ln in content.splitlines()
+                    if ln.strip().upper() != stripped.upper()
+                ).strip()
+                return plan, cleaned
+            break
+
+    # Legacy shape: a bare {"plan": [...]} JSON object somewhere in the content
     start = content.find("{")
     end = content.rfind("}")
-    if start == -1 or end == -1 or end <= start:
-        return []
-    try:
-        data = json.loads(content[start : end + 1])
-    except json.JSONDecodeError:
-        return []
-    plan = data.get("plan")
-    if isinstance(plan, list) and all(isinstance(x, str) for x in plan):
-        return plan
-    return []
+    if start != -1 and end > start:
+        try:
+            data = json.loads(content[start : end + 1])
+        except json.JSONDecodeError:
+            return [], content
+        plan = data.get("plan") if isinstance(data, dict) else None
+        if isinstance(plan, list) and all(isinstance(x, str) for x in plan):
+            cleaned = (content[:start] + content[end + 1 :]).strip()
+            return plan, cleaned
+    return [], content
 
 
 def _humanise_plan(plan: list[str]) -> str:
@@ -210,16 +247,17 @@ class PlannerAgent:
             # plan turn isn't treated as a final answer.
             extracted_plan_this_turn = False
             if step_no == 0 and content and not plan_subtasks:
-                extracted = _extract_plan(content)
+                extracted, cleaned = _extract_plan(content)
                 if extracted:
                     plan_subtasks = extracted
                     extracted_plan_this_turn = True
+                    # Replace the visible content with the version with the
+                    # PLAN: line stripped, so it never reaches the chat history.
+                    content = cleaned
 
-            # Persist the assistant turn. If it was a JSON plan, store the
-            # human-readable version so the chat UI doesn't show raw JSON.
-            persisted_content = (
-                _humanise_plan(plan_subtasks) if extracted_plan_this_turn else content
-            )
+            # Persist the assistant turn. The PLAN: line was already stripped
+            # from `content` above so the chat never shows raw JSON.
+            persisted_content = content
             if persisted_content:
                 self._persist(session_id, "assistant", persisted_content)
 
@@ -398,14 +436,49 @@ class PlannerAgent:
         for step_no in range(self.max_steps):
             buf: list[str] = []
             tool_calls: list[dict[str, Any]] = []
+            # On step 0 we briefly hold tokens until we can tell if the turn
+            # starts with `PLAN:` (or `{` legacy). If so, buffer the whole turn
+            # and emit a `plan` event; otherwise, flush and stream live.
+            holding = step_no == 0
             for chunk in llm_chat_stream(messages=messages, tools=tools):
-                if chunk.get("delta"):
-                    buf.append(chunk["delta"])
-                    yield {"type": "token", "delta": chunk["delta"]}
+                delta = chunk.get("delta") or ""
+                if delta:
+                    buf.append(delta)
+                    if holding:
+                        head = "".join(buf).lstrip()[:6].upper()
+                        if not head:
+                            pass  # still nothing to inspect
+                        elif head.startswith("PLAN:") or head.startswith("{"):
+                            # keep holding; this is a plan turn
+                            pass
+                        else:
+                            # not a plan turn — flush buffered tokens and switch to live
+                            for held in buf:
+                                yield {"type": "token", "delta": held}
+                            holding = False
+                    else:
+                        yield {"type": "token", "delta": delta}
                 if chunk.get("done"):
                     tool_calls = chunk.get("tool_calls", [])
 
             content = "".join(buf)
+            extracted_plan_this_turn = False
+
+            if step_no == 0 and content:
+                extracted, cleaned = _extract_plan(content)
+                if extracted:
+                    plan_subtasks = extracted
+                    extracted_plan_this_turn = True
+                    yield {"type": "plan", "subtasks": extracted}
+                    content = cleaned
+                    # If anything followed the PLAN line in the same turn,
+                    # surface it as token deltas too (we held the whole turn).
+                    if content:
+                        yield {"type": "token", "delta": content}
+                elif holding:
+                    # We held the turn but it wasn't actually a plan; flush now.
+                    yield {"type": "token", "delta": content}
+
             if content:
                 self._persist(session_id, "assistant", content)
 
@@ -430,9 +503,13 @@ class PlannerAgent:
             elif content:
                 messages.append({"role": "assistant", "content": content})
 
-            if not tool_calls:
+            if not tool_calls and not extracted_plan_this_turn:
                 full_final = content
                 break
+
+            # Plan-only first turn: continue so the LLM gets to use tools.
+            if not tool_calls:
+                continue
 
             for i, tc in enumerate(tool_calls):
                 name = tc["name"]

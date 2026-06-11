@@ -36,6 +36,14 @@ def test_search_attractions_returns_list_of_typed_dicts() -> None:
     assert {a["name"] for a in result} != {a["name"] for a in other}
 
 
+def test_search_attractions_supports_common_global_cities() -> None:
+    """The catalog must include cities a typical user would ask about (Paris, NYC, etc.)."""
+    for city in ("Paris", "New York", "London", "Bangkok", "Singapore"):
+        result = search_attractions(city=city, limit=3)
+        assert result, f"no attractions for {city}"
+        assert len(result) >= 1
+
+
 def test_calculate_budget_math_is_correct() -> None:
     """Budget math: nights * accommodation + transport + activities * days."""
     breakdown = calculate_budget(

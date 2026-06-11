@@ -121,17 +121,23 @@
       // Echo the user's message immediately
       renderMessage({ role: "user", content });
 
-      // Build a placeholder assistant bubble we'll fill with streamed tokens.
-      const assistantDiv = document.createElement("div");
-      assistantDiv.className = "msg msg-assistant";
-      const assistantStrong = document.createElement("strong");
-      assistantStrong.textContent = "assistant";
-      assistantDiv.appendChild(assistantStrong);
-      const assistantText = document.createTextNode(": ");
-      assistantDiv.appendChild(assistantText);
-      const assistantBody = document.createElement("span");
-      assistantDiv.appendChild(assistantBody);
-      $("messages").appendChild(assistantDiv);
+      // Lazy-create the assistant bubble on the first token. This keeps tool
+      // bubbles ordered correctly: tool_call → assistant token → tool_result …
+      let assistantBody = null;
+      function appendAssistantText(text) {
+        if (!assistantBody) {
+          const div = document.createElement("div");
+          div.className = "msg msg-assistant";
+          const strong = document.createElement("strong");
+          strong.textContent = "assistant";
+          div.appendChild(strong);
+          div.appendChild(document.createTextNode(": "));
+          assistantBody = document.createElement("span");
+          div.appendChild(assistantBody);
+          $("messages").appendChild(div);
+        }
+        assistantBody.textContent += text;
+      }
 
       // Stream from POST /sessions/{id}/plan/stream — SSE, one event per "data: {json}" line.
       const r = await fetch(
@@ -143,7 +149,7 @@
         }
       );
       if (!r.ok || !r.body) {
-        assistantBody.textContent = `(error: ${r.status})`;
+        appendAssistantText(`(error: ${r.status})`);
         return;
       }
       const reader = r.body.getReader();
@@ -160,7 +166,16 @@
           let evt;
           try { evt = JSON.parse(line.slice(6)); } catch { continue; }
           if (evt.type === "token") {
-            assistantBody.textContent += evt.delta;
+            appendAssistantText(evt.delta);
+          } else if (evt.type === "plan") {
+            // Show sub-tasks as a collapsed-style trace bubble, not as the assistant message
+            const planDiv = document.createElement("div");
+            planDiv.className = "msg msg-plan";
+            const strong = document.createElement("strong");
+            strong.textContent = "plan";
+            planDiv.appendChild(strong);
+            planDiv.appendChild(document.createTextNode(": " + evt.subtasks.join(" → ")));
+            $("messages").appendChild(planDiv);
           } else if (evt.type === "tool_call") {
             const toolDiv = document.createElement("div");
             toolDiv.className = "msg msg-tool";
@@ -173,7 +188,7 @@
             $("messages").appendChild(toolDiv);
           } else if (evt.type === "done") {
             if (evt.truncated) {
-              assistantBody.textContent += "\n(plan truncated — agent ran out of steps)";
+              appendAssistantText("\n(plan truncated — agent ran out of steps)");
             }
           }
           $("messages").scrollTop = $("messages").scrollHeight;

@@ -85,7 +85,7 @@ def test_planner_injects_preferences_into_system_prompt(
     assert "hiking" in sys_msg["content"]
     assert "2000" in sys_msg["content"]
     # The base persona text should still be present
-    assert "Smart Travel Planner" in sys_msg["content"]
+    assert "travel-planning friend" in sys_msg["content"]
 
 
 def test_planner_no_preferences_falls_back_to_default_system_prompt(
