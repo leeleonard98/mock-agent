@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
@@ -158,9 +159,31 @@ def run_planner(
     db: Session = Depends(get_db),
 ) -> PlanResponse:
     """Run the planner agent against a session. Persists turns; returns structured result."""
-    from app.agents.planner import PlannerAgent  # avoid circular import at module load
+    from app.agents.planner import PlannerAgent  # avoid eager OpenAI import
 
     _get_session_or_404(session_id, db, user_id=user_id)
     agent = PlannerAgent(db)
     result = agent.plan(session_id, goal=payload.goal)
     return PlanResponse(**result)
+
+
+@router.post("/sessions/{session_id}/plan/stream")
+def run_planner_stream(
+    session_id: int,
+    payload: PlanRequest,
+    user_id: str | None = None,
+    db: Session = Depends(get_db),
+) -> StreamingResponse:
+    """Stream the planner's events as Server-Sent Events (T6)."""
+    import json as _json
+
+    from app.agents.planner import PlannerAgent
+
+    _get_session_or_404(session_id, db, user_id=user_id)
+
+    def _sse() -> "Iterator[bytes]":  # type: ignore[name-defined]
+        agent = PlannerAgent(db)
+        for event in agent.plan_stream(session_id, goal=payload.goal):
+            yield f"data: {_json.dumps(event)}\n\n".encode()
+
+    return StreamingResponse(_sse(), media_type="text/event-stream")
