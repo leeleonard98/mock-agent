@@ -226,3 +226,25 @@ def get_trace(
         session_id=session_id,
         events=[TraceEventOut.model_validate(r) for r in rows],
     )
+
+
+class MultiPlanResponse(BaseModel):
+    research: dict
+    budget: dict
+    itinerary: dict
+    combined: str
+
+
+@router.post("/sessions/{session_id}/plan/multi", response_model=MultiPlanResponse)
+def run_supervisor(
+    session_id: int,
+    payload: PlanRequest,
+    user_id: str | None = None,
+    db: Session = Depends(get_db),
+) -> MultiPlanResponse:
+    """Run the multi-agent supervisor (T5 bonus)."""
+    from app.agents.supervisor import SupervisorAgent
+
+    _get_session_or_404(session_id, db, user_id=user_id)
+    out = SupervisorAgent(db).run(session_id, goal=payload.goal)
+    return MultiPlanResponse(**out)
