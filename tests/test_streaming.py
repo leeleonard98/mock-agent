@@ -50,7 +50,12 @@ def stream_llm(monkeypatch: pytest.MonkeyPatch):
 
 
 def test_plan_stream_yields_token_chunks(db: Session, stream_llm) -> None:
-    """plan_stream emits incremental token deltas and a final 'done' event."""
+    """plan_stream emits the streamed text as token events and a final 'done'.
+
+    Step 0 may be buffered (so the PLAN: line can be stripped); we don't
+    assert per-chunk delivery, only that all the text is delivered as
+    token events and the final-answer concatenation matches.
+    """
     sess = ChatSession(user_id="alice")
     db.add(sess)
     db.commit()
@@ -64,13 +69,36 @@ def test_plan_stream_yields_token_chunks(db: Session, stream_llm) -> None:
     ]
 
     events = list(PlannerAgent(db).plan_stream(sess.id, goal="hi"))
-    # token events
-    token_events = [e for e in events if e["type"] == "token"]
-    assert [e["delta"] for e in token_events] == ["Here", " is", " your", " plan."]
+    token_text = "".join(e["delta"] for e in events if e["type"] == "token")
+    assert token_text == "Here is your plan."
     # exactly one done event
     done_events = [e for e in events if e["type"] == "done"]
     assert len(done_events) == 1
     assert done_events[0]["final"] == "Here is your plan."
+
+
+def test_plan_stream_step_1_streams_token_by_token(db: Session, stream_llm) -> None:
+    """Once past step 0 the planner streams each delta separately so the
+    user sees tokens appear one at a time."""
+    sess = ChatSession(user_id="bob_stream")
+    db.add(sess)
+    db.commit()
+    db.refresh(sess)
+
+    stream_llm.script = [
+        # Step 0: tool call (so we move to step 1 quickly)
+        {
+            "chunks": [],
+            "tool_calls": [
+                {"name": "search_attractions", "arguments": {"city": "Tokyo", "limit": 1}}
+            ],
+        },
+        # Step 1: streamed final answer — these MUST come out as separate token events
+        {"chunks": ["Sure", "—", " Tokyo", " sounds", " great."], "tool_calls": []},
+    ]
+    events = list(PlannerAgent(db).plan_stream(sess.id, goal="plan"))
+    token_deltas = [e["delta"] for e in events if e["type"] == "token"]
+    assert token_deltas == ["Sure", "—", " Tokyo", " sounds", " great."]
 
 
 def test_plan_stream_persists_full_assistant_message_after_completion(
@@ -198,3 +226,43 @@ def test_plan_stream_emits_plan_event_instead_of_raw_json(
     # Final answer still streams as token deltas
     assert "Final answer." in token_text
     assert "done" in types
+
+
+def test_plan_line_stripped_when_arrives_mid_stream(db: Session, stream_llm) -> None:
+    """Regression: the `PLAN:{...}` line must not leak even when split across
+    chunks or preceded by other text in the same step-0 turn."""
+    sess = ChatSession(user_id="frank")
+    db.add(sess)
+    db.commit()
+    db.refresh(sess)
+
+    # Realistic streaming: the LLM warms up with a sentence, THEN emits the
+    # PLAN: line, then continues. Older flush-on-non-PLAN-head logic let the
+    # PLAN line through. Buffering the whole step-0 turn fixes it.
+    stream_llm.script = [
+        {
+            "chunks": [
+                "Sure! ",
+                "Let me think.",
+                "\nPLAN:",
+                '{"plan":',
+                '["A","B"]}',
+            ],
+            "tool_calls": [],
+        }
+    ]
+
+    events = list(PlannerAgent(db).plan_stream(sess.id, goal="hi"))
+    token_text = "".join(e["delta"] for e in events if e["type"] == "token")
+
+    # The PLAN: line — including its JSON body — must NOT appear in any token
+    assert "PLAN:" not in token_text, f"PLAN line leaked: {token_text!r}"
+    assert '{"plan"' not in token_text, f"PLAN JSON leaked: {token_text!r}"
+    # The non-PLAN narrative IS visible
+    assert "Sure!" in token_text
+    assert "Let me think." in token_text
+
+    # The plan event was emitted with the right subtasks
+    plan_events = [e for e in events if e["type"] == "plan"]
+    assert len(plan_events) == 1
+    assert plan_events[0]["subtasks"] == ["A", "B"]

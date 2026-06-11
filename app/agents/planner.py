@@ -436,27 +436,16 @@ class PlannerAgent:
         for step_no in range(self.max_steps):
             buf: list[str] = []
             tool_calls: list[dict[str, Any]] = []
-            # On step 0 we briefly hold tokens until we can tell if the turn
-            # starts with `PLAN:` (or `{` legacy). If so, buffer the whole turn
-            # and emit a `plan` event; otherwise, flush and stream live.
+            # Step 0 may begin with a `PLAN:{...}` line that must NEVER reach
+            # the user. Always buffer the whole turn at step 0; turns 1+ stream
+            # token-by-token. (The cost is one model-turn of latency before the
+            # first paint, which is negligible against tool dispatch time.)
             holding = step_no == 0
             for chunk in llm_chat_stream(messages=messages, tools=tools):
                 delta = chunk.get("delta") or ""
                 if delta:
                     buf.append(delta)
-                    if holding:
-                        head = "".join(buf).lstrip()[:6].upper()
-                        if not head:
-                            pass  # still nothing to inspect
-                        elif head.startswith("PLAN:") or head.startswith("{"):
-                            # keep holding; this is a plan turn
-                            pass
-                        else:
-                            # not a plan turn — flush buffered tokens and switch to live
-                            for held in buf:
-                                yield {"type": "token", "delta": held}
-                            holding = False
-                    else:
+                    if not holding:
                         yield {"type": "token", "delta": delta}
                 if chunk.get("done"):
                     tool_calls = chunk.get("tool_calls", [])
@@ -471,12 +460,9 @@ class PlannerAgent:
                     extracted_plan_this_turn = True
                     yield {"type": "plan", "subtasks": extracted}
                     content = cleaned
-                    # If anything followed the PLAN line in the same turn,
-                    # surface it as token deltas too (we held the whole turn).
-                    if content:
-                        yield {"type": "token", "delta": content}
-                elif holding:
-                    # We held the turn but it wasn't actually a plan; flush now.
+                # Now that the PLAN line (if any) is stripped, flush whatever
+                # remains as token deltas so the user sees it.
+                if content:
                     yield {"type": "token", "delta": content}
 
             if content:
