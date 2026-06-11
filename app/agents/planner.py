@@ -28,7 +28,7 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.memory import load_preferences
-from app.models import ChatSession, Message
+from app.models import ChatSession, Message, TraceEvent
 from app.tools import registry
 
 SYSTEM_PROMPT = (
@@ -201,6 +201,7 @@ class PlannerAgent:
         final_content = ""
 
         for step_no in range(self.max_steps):
+            self._trace(session_id, "thinking", {"step": step_no})
             response = llm_chat(messages=messages, tools=tools)
             content = response.get("content") or ""
             tool_calls = response.get("tool_calls") or []
@@ -262,10 +263,16 @@ class PlannerAgent:
             for i, tc in enumerate(tool_calls):
                 name = tc["name"]
                 args = tc.get("arguments") or {}
+                self._trace(
+                    session_id, "tool_call", {"name": name, "arguments": args}
+                )
                 try:
                     result = registry.invoke(name, args)
                 except Exception as e:
                     result = {"error": f"{type(e).__name__}: {e}"}
+                self._trace(
+                    session_id, "tool_result", {"name": name, "result": result}
+                )
                 steps.append(_Step(name=name, arguments=args, result=result))
                 tool_payload = json.dumps(result, default=str)
                 self._persist(
@@ -284,6 +291,12 @@ class PlannerAgent:
         else:
             truncated = True
 
+        self._trace(
+            session_id,
+            "complete",
+            {"final": final_content, "truncated": truncated, "plan": plan_subtasks},
+        )
+
         return {
             "plan": plan_subtasks,
             "tool_calls": [
@@ -296,6 +309,12 @@ class PlannerAgent:
     def _persist(self, session_id: int, role: str, content: str) -> None:
         msg = Message(session_id=session_id, role=role, content=content)
         self.db.add(msg)
+        self.db.commit()
+
+    def _trace(self, session_id: int, event_type: str, payload: dict[str, Any]) -> None:
+        """Record one trace event (T7). Each event is its own committed row."""
+        ev = TraceEvent(session_id=session_id, event_type=event_type, payload=payload)
+        self.db.add(ev)
         self.db.commit()
 
     # ------------------------------------------------------------------

@@ -79,3 +79,23 @@ class UserPreference(Base):
         onupdate=func.now(),
         nullable=False,
     )
+
+
+class TraceEvent(Base):
+    """Per-session agent execution trace (T7).
+
+    Each event is one decision/action of the agent — thinking, tool_call,
+    tool_result, complete. Stored as JSONB so payload shapes can vary.
+    """
+
+    __tablename__ = "trace_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    session_id: Mapped[int] = mapped_column(
+        ForeignKey("chat_sessions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload: Mapped[object] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )

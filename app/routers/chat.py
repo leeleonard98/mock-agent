@@ -187,3 +187,42 @@ def run_planner_stream(
             yield f"data: {_json.dumps(event)}\n\n".encode()
 
     return StreamingResponse(_sse(), media_type="text/event-stream")
+
+
+class TraceEventOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    session_id: int
+    event_type: str
+    payload: dict
+    created_at: datetime
+
+
+class TraceOut(BaseModel):
+    session_id: int
+    events: list[TraceEventOut]
+
+
+@router.get("/sessions/{session_id}/trace", response_model=TraceOut)
+def get_trace(
+    session_id: int,
+    user_id: str | None = None,
+    db: Session = Depends(get_db),
+) -> TraceOut:
+    """Return the agent's trace events for a session in execution order (T7)."""
+    from app.models import TraceEvent
+
+    _get_session_or_404(session_id, db, user_id=user_id)
+    rows = (
+        db.execute(
+            select(TraceEvent)
+            .where(TraceEvent.session_id == session_id)
+            .order_by(TraceEvent.id)
+        )
+        .scalars()
+        .all()
+    )
+    return TraceOut(
+        session_id=session_id,
+        events=[TraceEventOut.model_validate(r) for r in rows],
+    )
