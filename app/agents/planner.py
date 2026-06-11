@@ -1,0 +1,222 @@
+"""Planner agent (T2).
+
+Loops over OpenAI Chat Completions with tool-calling enabled. The LLM either
+returns text (final answer) or one-or-more tool calls; the agent dispatches
+tools through the T3 registry and feeds the results back. The whole
+conversation is persisted onto the session so the chat UI can show it.
+
+Design choices:
+- The LLM seam is `llm_chat(messages, tools)` returning a normalised dict
+  ``{"content": str, "tool_calls": [{"id", "name", "arguments"}]}``. Tests
+  monkeypatch this directly with a scripted sequence — no network.
+- We append both the assistant's tool_calls turn AND the role=tool replies
+  with matching `tool_call_id` so this works against the real OpenAI API,
+  not just our mock.
+- Hard cap on steps so a misbehaving model can't run away.
+- Plan extraction: if the model emits JSON like ``{"plan": [...]}`` on the
+  first turn we surface it AND treat that turn as a continuation (not a
+  final answer), so the loop proceeds to call tools.
+"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from typing import Any
+
+from sqlalchemy.orm import Session
+
+from app.config import get_settings
+from app.models import ChatSession, Message
+from app.tools import registry
+
+SYSTEM_PROMPT = (
+    "You are a Smart Travel Planner. Decompose the user's goal into sub-tasks, "
+    "use the tools provided to gather facts (attractions, budget, itinerary), "
+    "and return a clear day-by-day plan. When you first respond, output a JSON "
+    'object {"plan": ["sub-task 1", ...]} listing the sub-tasks before calling tools.'
+)
+
+
+@dataclass
+class _Step:
+    name: str
+    arguments: dict[str, Any]
+    result: Any
+
+
+def llm_chat(*, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> dict[str, Any]:
+    """Call OpenAI chat.completions with tools and return a normalised response.
+
+    Returns ``{"content": str, "tool_calls": [{"id", "name", "arguments"}]}``.
+    Tests monkeypatch this function directly.
+    """
+    from openai import OpenAI
+
+    settings = get_settings()
+    if not settings.OPENAI_API_KEY:
+        raise RuntimeError(
+            "OPENAI_API_KEY not set. Set it in .env or monkeypatch llm_chat in tests."
+        )
+    client = OpenAI(api_key=settings.OPENAI_API_KEY)
+    resp = client.chat.completions.create(
+        model=settings.OPENAI_MODEL,
+        messages=messages,
+        tools=tools,
+        tool_choice="auto",
+    )
+    msg = resp.choices[0].message
+    tool_calls: list[dict[str, Any]] = []
+    for tc in msg.tool_calls or []:
+        try:
+            args = json.loads(tc.function.arguments or "{}")
+        except json.JSONDecodeError:
+            args = {}
+        tool_calls.append({"id": tc.id, "name": tc.function.name, "arguments": args})
+    return {"content": msg.content or "", "tool_calls": tool_calls}
+
+
+def _extract_plan(content: str) -> list[str]:
+    """Try to parse a JSON plan from the model's content. Returns [] if none."""
+    if not content:
+        return []
+    start = content.find("{")
+    end = content.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        return []
+    try:
+        data = json.loads(content[start : end + 1])
+    except json.JSONDecodeError:
+        return []
+    plan = data.get("plan")
+    if isinstance(plan, list) and all(isinstance(x, str) for x in plan):
+        return plan
+    return []
+
+
+def _humanise_plan(plan: list[str]) -> str:
+    return "Plan:\n" + "\n".join(f"  {i + 1}. {step}" for i, step in enumerate(plan))
+
+
+class PlannerAgent:
+    def __init__(self, db: Session, *, max_steps: int = 8) -> None:
+        self.db = db
+        self.max_steps = max_steps
+
+    def plan(self, session_id: int, goal: str) -> dict[str, Any]:
+        sess = self.db.get(ChatSession, session_id)
+        if sess is None:
+            raise ValueError(f"session {session_id} not found")
+
+        # Persist the user goal exactly once. The in-memory `messages` list mirrors
+        # what we send to OpenAI; the DB stores the user-facing chat log.
+        self._persist(session_id, "user", goal)
+
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": goal},
+        ]
+
+        tools = registry.openai_schemas()
+        steps: list[_Step] = []
+        plan_subtasks: list[str] = []
+        truncated = False
+        final_content = ""
+
+        for step_no in range(self.max_steps):
+            response = llm_chat(messages=messages, tools=tools)
+            content = response.get("content") or ""
+            tool_calls = response.get("tool_calls") or []
+
+            # First-turn plan extraction. We continue the loop afterwards so the
+            # plan turn isn't treated as a final answer.
+            extracted_plan_this_turn = False
+            if step_no == 0 and content and not plan_subtasks:
+                extracted = _extract_plan(content)
+                if extracted:
+                    plan_subtasks = extracted
+                    extracted_plan_this_turn = True
+
+            # Persist the assistant turn. If it was a JSON plan, store the
+            # human-readable version so the chat UI doesn't show raw JSON.
+            persisted_content = (
+                _humanise_plan(plan_subtasks) if extracted_plan_this_turn else content
+            )
+            if persisted_content:
+                self._persist(session_id, "assistant", persisted_content)
+
+            # Append the assistant turn to the OpenAI message list. If there are
+            # tool_calls we MUST include them with their ids so the role=tool
+            # replies have something to reference.
+            if tool_calls:
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": content or None,
+                        "tool_calls": [
+                            {
+                                "id": tc.get("id") or f"call_{step_no}_{i}",
+                                "type": "function",
+                                "function": {
+                                    "name": tc["name"],
+                                    "arguments": json.dumps(tc.get("arguments") or {}),
+                                },
+                            }
+                            for i, tc in enumerate(tool_calls)
+                        ],
+                    }
+                )
+            elif content:
+                messages.append({"role": "assistant", "content": content})
+
+            # Termination: no tool calls AND we already have a plan (or this turn
+            # didn't yield a plan to extract) → this is the final answer.
+            if not tool_calls and not extracted_plan_this_turn:
+                final_content = content
+                break
+
+            # If the LLM emitted only a plan with no tool calls on the first turn,
+            # we keep going so it can actually use tools. We don't synthesise a
+            # message; OpenAI will see the conversation as plan → continue.
+            if not tool_calls:
+                continue
+
+            # Dispatch each tool call serially
+            for i, tc in enumerate(tool_calls):
+                name = tc["name"]
+                args = tc.get("arguments") or {}
+                try:
+                    result = registry.invoke(name, args)
+                except Exception as e:
+                    result = {"error": f"{type(e).__name__}: {e}"}
+                steps.append(_Step(name=name, arguments=args, result=result))
+                tool_payload = json.dumps(result, default=str)
+                self._persist(
+                    session_id,
+                    "tool",
+                    f"[{name}] args={json.dumps(args)} result={tool_payload}",
+                )
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tc.get("id") or f"call_{step_no}_{i}",
+                        "name": name,
+                        "content": tool_payload,
+                    }
+                )
+        else:
+            truncated = True
+
+        return {
+            "plan": plan_subtasks,
+            "tool_calls": [
+                {"name": s.name, "arguments": s.arguments, "result": s.result} for s in steps
+            ],
+            "final": final_content,
+            "truncated": truncated,
+        }
+
+    def _persist(self, session_id: int, role: str, content: str) -> None:
+        msg = Message(session_id=session_id, role=role, content=content)
+        self.db.add(msg)
+        self.db.commit()

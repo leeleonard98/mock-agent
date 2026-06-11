@@ -131,3 +131,36 @@ def add_message(
     db.commit()
     db.refresh(msg)
     return MessageOut.model_validate(msg)
+
+
+class PlanRequest(BaseModel):
+    goal: str = Field(min_length=1, max_length=2000)
+
+
+class PlanToolCall(BaseModel):
+    name: str
+    arguments: dict
+    result: object
+
+
+class PlanResponse(BaseModel):
+    plan: list[str]
+    tool_calls: list[PlanToolCall]
+    final: str
+    truncated: bool
+
+
+@router.post("/sessions/{session_id}/plan", response_model=PlanResponse)
+def run_planner(
+    session_id: int,
+    payload: PlanRequest,
+    user_id: str | None = None,
+    db: Session = Depends(get_db),
+) -> PlanResponse:
+    """Run the planner agent against a session. Persists turns; returns structured result."""
+    from app.agents.planner import PlannerAgent  # avoid circular import at module load
+
+    _get_session_or_404(session_id, db, user_id=user_id)
+    agent = PlannerAgent(db)
+    result = agent.plan(session_id, goal=payload.goal)
+    return PlanResponse(**result)
