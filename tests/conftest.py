@@ -113,3 +113,32 @@ def mock_llm(monkeypatch: pytest.MonkeyPatch) -> Iterator[MockLLM]:
     mock = MockLLM()
     monkeypatch.setattr(llm_module, "complete", mock)
     yield mock
+
+
+class ScriptedLLM:
+    """Drives a fake multi-turn LLM for the planner tests.
+
+    Each `script` entry is either ``{"content": str, "tool_calls": []}`` for a
+    final-answer turn or ``{"content": "", "tool_calls": [{"name", "arguments"}]}``
+    for a tool-calling turn. The planner pops one entry per turn.
+    """
+
+    def __init__(self) -> None:
+        self.script: list[dict] = []
+        self.calls: list[dict] = []
+
+    def chat(self, *, messages, tools, **_):
+        self.calls.append({"messages": list(messages), "tools": tools})
+        if not self.script:
+            return {"content": "DONE", "tool_calls": []}
+        return self.script.pop(0)
+
+
+@pytest.fixture
+def script_llm(monkeypatch: pytest.MonkeyPatch) -> Iterator[ScriptedLLM]:
+    """Monkeypatch the planner's llm_chat seam with a scripted multi-turn fake."""
+    from app.agents import planner as planner_module
+
+    s = ScriptedLLM()
+    monkeypatch.setattr(planner_module, "llm_chat", s.chat)
+    yield s

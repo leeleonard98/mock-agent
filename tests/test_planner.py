@@ -5,38 +5,13 @@ from __future__ import annotations
 import json
 
 import httpx
-import pytest
 
 from app.agents.planner import PlannerAgent
 from app.models import ChatSession, Message
 from sqlalchemy.orm import Session
 
 
-# A small helper to script the mock LLM's chat() method (multi-turn tool-calling).
-# Each entry is either {"content": "..."} for a final assistant message, or
-# {"tool_calls": [{"name": ..., "arguments": {...}}]} to dispatch a tool.
-
-
-@pytest.fixture
-def script_llm(monkeypatch: pytest.MonkeyPatch):
-    from app.agents import planner as planner_module
-
-    class ScriptedLLM:
-        def __init__(self) -> None:
-            self.script: list[dict] = []
-            self.calls: list[dict] = []
-
-        def chat(self, *, messages, tools, **_):
-            self.calls.append({"messages": list(messages), "tools": tools})
-            if not self.script:
-                return {"content": "DONE", "tool_calls": []}
-            return self.script.pop(0)
-
-    s = ScriptedLLM()
-    monkeypatch.setattr(planner_module, "llm_chat", s.chat)
-    return s
-
-
+# script_llm fixture comes from tests/conftest.py
 # ---------------------------------------------------------------------------
 # Direct PlannerAgent tests
 # ---------------------------------------------------------------------------
