@@ -1,0 +1,65 @@
+* { box-sizing: border-box; }
+body {
+  font-family: -apple-system, system-ui, sans-serif;
+  margin: 0;
+  background: #fafafa;
+  color: #222;
+}
+header {
+  padding: 12px 24px;
+  background: #1d2735;
+  color: #fff;
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+header h1 { margin: 0; font-size: 18px; }
+header small { color: #9aa7bd; }
+
+main#chat {
+  max-width: 720px;
+  margin: 24px auto;
+  padding: 0 16px;
+}
+#messages {
+  background: #fff;
+  border: 1px solid #e2e6ec;
+  border-radius: 8px;
+  padding: 12px;
+  height: 50vh;
+  overflow-y: auto;
+}
+.msg {
+  padding: 6px 8px;
+  margin: 4px 0;
+  border-radius: 6px;
+  font-size: 14px;
+  line-height: 1.4;
+}
+.msg-user      { background: #e8f0ff; }
+.msg-assistant { background: #eef9ee; }
+.msg-system    { background: #fdecea; color: #b3261e; }
+.msg-tool      { background: #f3eefe; color: #5a2cab; font-family: ui-monospace, monospace; }
+
+#composer {
+  margin-top: 12px;
+  display: grid;
+  grid-template-columns: 1fr 4fr auto;
+  gap: 8px;
+}
+#composer input, #composer textarea {
+  padding: 8px;
+  border: 1px solid #cfd5dd;
+  border-radius: 6px;
+  font: inherit;
+}
+#composer button {
+  padding: 0 16px;
+  border: 0;
+  border-radius: 6px;
+  background: #2c6cf6;
+  color: #fff;
+  font-weight: 600;
+  cursor: pointer;
+}
+#composer button:hover { background: #1a52cf; }

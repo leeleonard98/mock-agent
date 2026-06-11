@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Smart Travel Planner</title>
+  <link rel="stylesheet" href="/static/app.css" />
+</head>
+<body>
+  <header>
+    <h1>🧭 Smart Travel Planner</h1>
+    <small id="session-info">no session</small>
+  </header>
+
+  <main id="chat">
+    <div id="messages" aria-live="polite"></div>
+    <form id="composer">
+      <input id="user_id" placeholder="user id (e.g. alice)" value="alice" />
+      <textarea id="prompt" placeholder="Plan me a 5-day Japan trip under $2000…" rows="2"></textarea>
+      <button type="submit">Send</button>
+    </form>
+  </main>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    let sessionId = null;
+
+    async function ensureSession() {
+      if (sessionId) return sessionId;
+      const r = await fetch("/sessions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user_id: $("user_id").value || "anon" }),
+      });
+      const s = await r.json();
+      sessionId = s.id;
+      $("session-info").textContent = `session #${sessionId}`;
+      return sessionId;
+    }
+
+    function renderMessage(m) {
+      const div = document.createElement("div");
+      div.className = `msg msg-${m.role}`;
+      const role = document.createElement("strong");
+      role.textContent = m.role;
+      const text = document.createTextNode(`: ${m.content}`);
+      div.appendChild(role);
+      div.appendChild(text);
+      $("messages").appendChild(div);
+      $("messages").scrollTop = $("messages").scrollHeight;
+    }
+
+    $("composer").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const content = $("prompt").value.trim();
+      if (!content) return;
+      const sid = await ensureSession();
+      const r = await fetch(`/sessions/${sid}/messages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ role: "user", content }),
+      });
+      if (!r.ok) {
+        renderMessage({ role: "system", content: `error: ${r.status}` });
+        return;
+      }
+      renderMessage(await r.json());
+      $("prompt").value = "";
+    });
+  </script>
+</body>
+</html>
