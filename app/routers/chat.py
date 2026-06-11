@@ -248,3 +248,18 @@ def run_supervisor(
     _get_session_or_404(session_id, db, user_id=user_id)
     out = SupervisorAgent(db).run(session_id, goal=payload.goal)
     return MultiPlanResponse(**out)
+
+
+@router.post("/sessions/{session_id}/regenerate", response_model=PlanResponse)
+def regenerate_plan(
+    session_id: int,
+    payload: PlanRequest,
+    user_id: str | None = None,
+    db: Session = Depends(get_db),
+) -> PlanResponse:
+    """Regenerate the plan, taking the latest feedback into account (T8)."""
+    from app.agents.planner import PlannerAgent
+
+    _get_session_or_404(session_id, db, user_id=user_id)
+    result = PlannerAgent(db).regenerate(session_id, original_goal=payload.goal)
+    return PlanResponse(**result)

@@ -99,3 +99,23 @@ class TraceEvent(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+
+class ItineraryFeedback(Base):
+    """User-submitted rating + optional comment on a session's plan (T8).
+
+    Multiple feedback rows per session are allowed; the planner uses the
+    latest one when regenerating.
+    """
+
+    __tablename__ = "itinerary_feedback"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    session_id: Mapped[int] = mapped_column(
+        ForeignKey("chat_sessions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    rating: Mapped[int] = mapped_column(Integer, nullable=False)
+    comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )

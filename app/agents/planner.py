@@ -28,7 +28,7 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.memory import load_preferences
-from app.models import ChatSession, Message, TraceEvent
+from app.models import ChatSession, ItineraryFeedback, Message, TraceEvent
 from app.tools import registry
 
 SYSTEM_PROMPT = (
@@ -316,6 +316,40 @@ class PlannerAgent:
         ev = TraceEvent(session_id=session_id, event_type=event_type, payload=payload)
         self.db.add(ev)
         self.db.commit()
+
+    # ------------------------------------------------------------------
+    # Regenerate (T8): re-run plan() with the most recent feedback baked in
+    # ------------------------------------------------------------------
+
+    def regenerate(self, session_id: int, *, original_goal: str) -> dict[str, Any]:
+        """Run plan() again, prepending the latest feedback to the goal text.
+
+        The planner sees feedback both directly (as part of the user goal) and
+        indirectly (existing tool / message history would be loaded by future
+        T1-history work). Returning the planner's structured result.
+        """
+        from sqlalchemy import select
+
+        latest = (
+            self.db.execute(
+                select(ItineraryFeedback)
+                .where(ItineraryFeedback.session_id == session_id)
+                .order_by(ItineraryFeedback.id.desc())
+                .limit(1)
+            )
+            .scalars()
+            .first()
+        )
+        if latest is None:
+            return self.plan(session_id, goal=original_goal)
+
+        feedback_block = (
+            f"Previous itinerary feedback (rating {latest.rating}/5): "
+            f"{latest.comment or '(no comment)'}\n"
+            "Use this feedback to produce an improved plan."
+        )
+        revised_goal = f"{feedback_block}\n\nOriginal goal: {original_goal}"
+        return self.plan(session_id, goal=revised_goal)
 
     # ------------------------------------------------------------------
     # Streaming variant (T6)
