@@ -80,6 +80,8 @@ async def test_chat_index_page_renders(client: httpx.AsyncClient) -> None:
     # Session sidebar elements (T1 polish)
     assert 'id="sessions-list"' in body
     assert 'id="new-chat"' in body
+    # Submit must call the streaming planner, not just /messages
+    assert "/plan/stream" in body
 
 
 async def test_user_id_scoping_prevents_cross_user_reads(client: httpx.AsyncClient) -> None:

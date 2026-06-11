@@ -116,17 +116,69 @@
       const content = $("prompt").value.trim();
       if (!content) return;
       const sid = await ensureSession();
-      const r = await fetch(`/sessions/${sid}/messages?user_id=${encodeURIComponent(userId())}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ role: "user", content }),
-      });
-      if (!r.ok) {
-        renderMessage({ role: "system", content: `error: ${r.status}` });
+      $("prompt").value = "";
+
+      // Echo the user's message immediately
+      renderMessage({ role: "user", content });
+
+      // Build a placeholder assistant bubble we'll fill with streamed tokens.
+      const assistantDiv = document.createElement("div");
+      assistantDiv.className = "msg msg-assistant";
+      const assistantStrong = document.createElement("strong");
+      assistantStrong.textContent = "assistant";
+      assistantDiv.appendChild(assistantStrong);
+      const assistantText = document.createTextNode(": ");
+      assistantDiv.appendChild(assistantText);
+      const assistantBody = document.createElement("span");
+      assistantDiv.appendChild(assistantBody);
+      $("messages").appendChild(assistantDiv);
+
+      // Stream from POST /sessions/{id}/plan/stream — SSE, one event per "data: {json}" line.
+      const r = await fetch(
+        `/sessions/${sid}/plan/stream?user_id=${encodeURIComponent(userId())}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ goal: content }),
+        }
+      );
+      if (!r.ok || !r.body) {
+        assistantBody.textContent = `(error: ${r.status})`;
         return;
       }
-      renderMessage(await r.json());
-      $("prompt").value = "";
+      const reader = r.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = "";
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const lines = buf.split("\n\n");
+        buf = lines.pop() || "";
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          let evt;
+          try { evt = JSON.parse(line.slice(6)); } catch { continue; }
+          if (evt.type === "token") {
+            assistantBody.textContent += evt.delta;
+          } else if (evt.type === "tool_call") {
+            const toolDiv = document.createElement("div");
+            toolDiv.className = "msg msg-tool";
+            toolDiv.textContent = `🔧 ${evt.name}(${JSON.stringify(evt.arguments)})`;
+            $("messages").appendChild(toolDiv);
+          } else if (evt.type === "tool_result") {
+            const toolDiv = document.createElement("div");
+            toolDiv.className = "msg msg-tool";
+            toolDiv.textContent = `↳ ${evt.name} → ${JSON.stringify(evt.result).slice(0, 200)}`;
+            $("messages").appendChild(toolDiv);
+          } else if (evt.type === "done") {
+            if (evt.truncated) {
+              assistantBody.textContent += "\n(plan truncated — agent ran out of steps)";
+            }
+          }
+          $("messages").scrollTop = $("messages").scrollHeight;
+        }
+      }
       refreshSessions();
     });
 
