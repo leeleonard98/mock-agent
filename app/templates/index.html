@@ -8,33 +8,38 @@
 <body>
   <header>
     <h1>🧭 Smart Travel Planner</h1>
-    <small id="session-info">no session</small>
+    <div class="header-right">
+      <input id="user_id" placeholder="user id" value="alice" />
+      <button id="new-chat" type="button">+ New chat</button>
+      <small id="session-info">no session</small>
+    </div>
   </header>
 
-  <main id="chat">
-    <div id="messages" aria-live="polite"></div>
-    <form id="composer">
-      <input id="user_id" placeholder="user id (e.g. alice)" value="alice" />
-      <textarea id="prompt" placeholder="Plan me a 5-day Japan trip under $2000…" rows="2"></textarea>
-      <button type="submit">Send</button>
-    </form>
-  </main>
+  <div class="layout">
+    <aside id="sidebar">
+      <h2>Past chats</h2>
+      <ul id="sessions-list"></ul>
+    </aside>
+
+    <main id="chat">
+      <div id="messages" aria-live="polite"></div>
+      <form id="composer">
+        <textarea id="prompt" placeholder="Plan me a 5-day Japan trip under $2000…" rows="2"></textarea>
+        <button type="submit">Send</button>
+      </form>
+    </main>
+  </div>
 
   <script>
     const $ = (id) => document.getElementById(id);
     let sessionId = null;
 
-    async function ensureSession() {
-      if (sessionId) return sessionId;
-      const r = await fetch("/sessions", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ user_id: $("user_id").value || "anon" }),
-      });
-      const s = await r.json();
-      sessionId = s.id;
-      $("session-info").textContent = `session #${sessionId}`;
-      return sessionId;
+    function userId() {
+      return $("user_id").value.trim() || "anon";
+    }
+
+    function clearMessages() {
+      $("messages").innerHTML = "";
     }
 
     function renderMessage(m) {
@@ -49,12 +54,69 @@
       $("messages").scrollTop = $("messages").scrollHeight;
     }
 
+    async function refreshSessions() {
+      const list = $("sessions-list");
+      list.innerHTML = "";
+      const r = await fetch(`/sessions?user_id=${encodeURIComponent(userId())}`);
+      if (!r.ok) return;
+      const sessions = await r.json();
+      for (const s of sessions) {
+        const li = document.createElement("li");
+        li.dataset.sessionId = s.id;
+        li.textContent = s.title || `session #${s.id}`;
+        if (s.id === sessionId) li.classList.add("active");
+        li.addEventListener("click", () => loadSession(s.id));
+        list.appendChild(li);
+      }
+    }
+
+    async function loadSession(sid) {
+      const r = await fetch(`/sessions/${sid}?user_id=${encodeURIComponent(userId())}`);
+      if (!r.ok) {
+        renderMessage({ role: "system", content: `cannot load session ${sid}: ${r.status}` });
+        return;
+      }
+      const s = await r.json();
+      sessionId = s.id;
+      $("session-info").textContent = `session #${s.id}`;
+      clearMessages();
+      for (const m of s.messages) renderMessage(m);
+      refreshSessions();
+    }
+
+    async function newSession() {
+      const r = await fetch("/sessions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user_id: userId() }),
+      });
+      const s = await r.json();
+      sessionId = s.id;
+      $("session-info").textContent = `session #${s.id}`;
+      clearMessages();
+      refreshSessions();
+      return s.id;
+    }
+
+    async function ensureSession() {
+      if (sessionId) return sessionId;
+      return await newSession();
+    }
+
+    $("new-chat").addEventListener("click", () => newSession());
+    $("user_id").addEventListener("change", () => {
+      sessionId = null;
+      $("session-info").textContent = "no session";
+      clearMessages();
+      refreshSessions();
+    });
+
     $("composer").addEventListener("submit", async (e) => {
       e.preventDefault();
       const content = $("prompt").value.trim();
       if (!content) return;
       const sid = await ensureSession();
-      const r = await fetch(`/sessions/${sid}/messages`, {
+      const r = await fetch(`/sessions/${sid}/messages?user_id=${encodeURIComponent(userId())}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ role: "user", content }),
@@ -65,7 +127,11 @@
       }
       renderMessage(await r.json());
       $("prompt").value = "";
+      refreshSessions();
     });
+
+    // Initial load
+    refreshSessions();
   </script>
 </body>
 </html>

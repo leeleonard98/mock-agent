@@ -16,10 +16,73 @@ header {
 header h1 { margin: 0; font-size: 18px; }
 header small { color: #9aa7bd; }
 
-main#chat {
-  max-width: 720px;
+header .header-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+header input#user_id {
+  padding: 4px 8px;
+  border: 1px solid #2c3a52;
+  background: #243044;
+  color: #fff;
+  border-radius: 4px;
+  font: inherit;
+  width: 120px;
+}
+header button#new-chat {
+  padding: 4px 10px;
+  border: 0;
+  border-radius: 4px;
+  background: #2c6cf6;
+  color: #fff;
+  cursor: pointer;
+  font: inherit;
+}
+header button#new-chat:hover { background: #1a52cf; }
+
+.layout {
+  display: grid;
+  grid-template-columns: 240px 1fr;
+  gap: 16px;
+  max-width: 1100px;
   margin: 24px auto;
   padding: 0 16px;
+}
+#sidebar {
+  background: #fff;
+  border: 1px solid #e2e6ec;
+  border-radius: 8px;
+  padding: 12px;
+  height: 60vh;
+  overflow-y: auto;
+}
+#sidebar h2 {
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #6b7280;
+  margin: 4px 0 8px;
+}
+#sessions-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+#sessions-list li {
+  padding: 8px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  color: #1f2937;
+}
+#sessions-list li:hover { background: #f3f4f6; }
+#sessions-list li.active { background: #e8f0ff; color: #1d4ed8; font-weight: 600; }
+
+main#chat {
+  margin: 0;
+  padding: 0;
+  max-width: none;
 }
 #messages {
   background: #fff;
@@ -44,7 +107,7 @@ main#chat {
 #composer {
   margin-top: 12px;
   display: grid;
-  grid-template-columns: 1fr 4fr auto;
+  grid-template-columns: 1fr auto;
   gap: 8px;
 }
 #composer input, #composer textarea {

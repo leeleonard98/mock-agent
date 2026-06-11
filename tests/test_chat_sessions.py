@@ -70,13 +70,16 @@ async def test_get_missing_session_returns_404(client: httpx.AsyncClient) -> Non
 
 
 async def test_chat_index_page_renders(client: httpx.AsyncClient) -> None:
-    """The minimal Jinja chat UI must render at /."""
+    """The minimal Jinja chat UI must render at /, including the session sidebar."""
     r = await client.get("/")
     assert r.status_code == 200
     assert "text/html" in r.headers["content-type"]
     body = r.text
     assert "Smart Travel Planner" in body
     assert "<form id=\"composer\">" in body
+    # Session sidebar elements (T1 polish)
+    assert 'id="sessions-list"' in body
+    assert 'id="new-chat"' in body
 
 
 async def test_user_id_scoping_prevents_cross_user_reads(client: httpx.AsyncClient) -> None:
