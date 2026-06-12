@@ -19,6 +19,11 @@
     <aside id="sidebar">
       <h2>Past chats</h2>
       <ul id="sessions-list"></ul>
+      <h2 style="margin-top:18px;">Memory</h2>
+      <div id="prefs-panel">
+        <em id="prefs-empty">No preferences yet — mention things you like and the agent will remember.</em>
+        <ul id="prefs-list" style="display:none;"></ul>
+      </div>
     </aside>
 
     <main id="chat">
@@ -70,6 +75,34 @@
       }
     }
 
+    async function refreshPreferences() {
+      const r = await fetch(`/users/${encodeURIComponent(userId())}/preferences`);
+      if (!r.ok) return;
+      const { preferences } = await r.json();
+      const list = $("prefs-list");
+      const empty = $("prefs-empty");
+      list.innerHTML = "";
+      const keys = Object.keys(preferences || {});
+      if (!keys.length) {
+        empty.style.display = "";
+        list.style.display = "none";
+        return;
+      }
+      empty.style.display = "none";
+      list.style.display = "";
+      for (const k of keys) {
+        const li = document.createElement("li");
+        const strong = document.createElement("strong");
+        strong.textContent = k + ": ";
+        li.appendChild(strong);
+        const val = preferences[k];
+        li.appendChild(
+          document.createTextNode(typeof val === "string" ? val : JSON.stringify(val))
+        );
+        list.appendChild(li);
+      }
+    }
+
     async function loadSession(sid) {
       const r = await fetch(`/sessions/${sid}?user_id=${encodeURIComponent(userId())}`);
       if (!r.ok) {
@@ -109,6 +142,7 @@
       $("session-info").textContent = "no session";
       clearMessages();
       refreshSessions();
+      refreshPreferences();
     });
 
     $("composer").addEventListener("submit", async (e) => {
@@ -195,10 +229,12 @@
         }
       }
       refreshSessions();
+      refreshPreferences();
     });
 
     // Initial load
     refreshSessions();
+    refreshPreferences();
   </script>
 </body>
 </html>

@@ -142,3 +142,15 @@ def script_llm(monkeypatch: pytest.MonkeyPatch) -> Iterator[ScriptedLLM]:
     s = ScriptedLLM()
     monkeypatch.setattr(planner_module, "llm_chat", s.chat)
     yield s
+
+
+@pytest.fixture(autouse=True)
+def _silence_extract_preferences(monkeypatch: pytest.MonkeyPatch):
+    """Default: replace extract_preferences with a no-op so tests never hit OpenAI.
+
+    Tests that want to exercise the extraction wiring (test_pref_extraction.py)
+    can replace it with a real stub via their own monkeypatch.
+    """
+    from app.agents import planner as planner_module
+
+    monkeypatch.setattr(planner_module, "extract_preferences", lambda _goal: {})

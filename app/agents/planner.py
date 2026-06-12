@@ -192,6 +192,73 @@ def _humanise_plan(plan: list[str]) -> str:
     return "Plan:\n" + "\n".join(f"  {i + 1}. {step}" for i, step in enumerate(plan))
 
 
+_EXTRACTION_PROMPT = (
+    "Extract structured travel preferences from the user's goal.\n"
+    "Return ONLY a JSON object with any subset of these keys:\n"
+    '  "activities": list[str] (e.g. ["hiking", "nature"])\n'
+    '  "diet": str (e.g. "vegetarian", "kosher", "halal")\n'
+    '  "budget": int (USD, just the number)\n'
+    "Omit keys the user did not mention. Output nothing but the JSON object."
+)
+
+
+def extract_preferences(goal: str) -> dict[str, Any]:
+    """Ask the LLM to pull structured prefs out of a free-text user goal.
+
+    Returns a dict with any subset of {activities, diet, budget}. Empty if
+    the LLM says so or the call fails. Tests monkeypatch this function.
+    """
+    from openai import OpenAI
+
+    settings = get_settings()
+    if not settings.OPENAI_API_KEY:
+        return {}
+    try:
+        client = OpenAI(api_key=settings.OPENAI_API_KEY)
+        resp = client.chat.completions.create(
+            model=settings.OPENAI_MODEL,
+            messages=[
+                {"role": "system", "content": _EXTRACTION_PROMPT},
+                {"role": "user", "content": goal},
+            ],
+            response_format={"type": "json_object"},
+        )
+        raw = resp.choices[0].message.content or "{}"
+        data = json.loads(raw)
+    except Exception:
+        return {}
+    # Light validation: only keep the three expected keys with the expected shapes.
+    out: dict[str, Any] = {}
+    if isinstance(data.get("activities"), list) and all(
+        isinstance(x, str) for x in data["activities"]
+    ):
+        out["activities"] = data["activities"]
+    if isinstance(data.get("diet"), str) and data["diet"]:
+        out["diet"] = data["diet"]
+    if isinstance(data.get("budget"), (int, float)):
+        out["budget"] = int(data["budget"])
+    return out
+
+
+def _upsert_preferences(db, user_id: str, prefs: dict[str, Any]) -> None:
+    """Merge `prefs` into the user's stored preferences (upsert per key)."""
+    if not prefs:
+        return
+    from app.models import UserPreference as _UP
+    from sqlalchemy import select as _select
+
+    existing = {
+        r.key: r
+        for r in db.execute(_select(_UP).where(_UP.user_id == user_id)).scalars().all()
+    }
+    for k, v in prefs.items():
+        if k in existing:
+            existing[k].value = v
+        else:
+            db.add(_UP(user_id=user_id, key=k, value=v))
+    db.commit()
+
+
 class PlannerAgent:
     def __init__(self, db: Session, *, max_steps: int = 8) -> None:
         self.db = db
@@ -334,6 +401,13 @@ class PlannerAgent:
             "complete",
             {"final": final_content, "truncated": truncated, "plan": plan_subtasks},
         )
+
+        # T4+: auto-extract preferences from the goal and upsert. Best-effort —
+        # the function returns {} on any failure so this never breaks plan().
+        extracted = extract_preferences(goal)
+        if extracted:
+            _upsert_preferences(self.db, sess.user_id, extracted)
+            self._trace(session_id, "preferences_extracted", extracted)
 
         return {
             "plan": plan_subtasks,
@@ -522,5 +596,11 @@ class PlannerAgent:
                 )
         else:
             truncated = True
+
+        # T4+: auto-extract preferences from the goal and upsert.
+        extracted = extract_preferences(goal)
+        if extracted:
+            _upsert_preferences(self.db, sess.user_id, extracted)
+            self._trace(session_id, "preferences_extracted", extracted)
 
         yield {"type": "done", "final": full_final, "truncated": truncated}
